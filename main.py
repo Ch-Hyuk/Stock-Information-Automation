@@ -21,6 +21,15 @@ US_TICKER_NAMES = {
     "MSFT": "마이크로소프트",
     "NVDA": "엔비디아",
     "TSLA": "테슬라",
+    "AMD": "AMD",
+    "AVGO": "브로드컴",
+    "QCOM": "퀄컴",
+    "MU": "마이크론",
+    "INTC": "인텔",
+    "TSM": "TSMC",
+    "ASML": "ASML",
+    "AMAT": "어플라이드 머티어리얼즈",
+    "LRCX": "램리서치",
 }
 
 

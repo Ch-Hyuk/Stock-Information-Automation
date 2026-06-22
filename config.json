@@ -2,7 +2,7 @@
   "calendar_id": "primary",
   "timezone": "Asia/Seoul",
   "lookahead_days": 60,
-  "us_tickers": ["AAPL", "MSFT", "NVDA", "TSLA"],
+  "us_tickers": ["AAPL", "MSFT", "NVDA", "TSLA", "AMD", "AVGO", "QCOM", "MU", "INTC", "TSM", "ASML", "AMAT", "LRCX"],
   "watchlist": [
     {
       "market": "US",
@@ -29,6 +29,60 @@
       "query": "TSLA Tesla stock earnings delivery"
     },
     {
+      "market": "US",
+      "symbol": "AMD",
+      "name": "AMD",
+      "query": "AMD semiconductor stock earnings AI GPU"
+    },
+    {
+      "market": "US",
+      "symbol": "AVGO",
+      "name": "브로드컴",
+      "query": "AVGO Broadcom semiconductor AI networking earnings"
+    },
+    {
+      "market": "US",
+      "symbol": "QCOM",
+      "name": "퀄컴",
+      "query": "QCOM Qualcomm semiconductor earnings smartphone AI"
+    },
+    {
+      "market": "US",
+      "symbol": "MU",
+      "name": "마이크론",
+      "query": "MU Micron memory semiconductor earnings HBM"
+    },
+    {
+      "market": "US",
+      "symbol": "INTC",
+      "name": "인텔",
+      "query": "INTC Intel semiconductor foundry earnings"
+    },
+    {
+      "market": "US",
+      "symbol": "TSM",
+      "name": "TSMC",
+      "query": "TSM TSMC semiconductor foundry earnings"
+    },
+    {
+      "market": "US",
+      "symbol": "ASML",
+      "name": "ASML",
+      "query": "ASML semiconductor equipment EUV earnings"
+    },
+    {
+      "market": "US",
+      "symbol": "AMAT",
+      "name": "어플라이드 머티어리얼즈",
+      "query": "AMAT Applied Materials semiconductor equipment earnings"
+    },
+    {
+      "market": "US",
+      "symbol": "LRCX",
+      "name": "램리서치",
+      "query": "LRCX Lam Research semiconductor equipment earnings"
+    },
+    {
       "market": "KR",
       "symbol": "005930",
       "name": "삼성전자",
@@ -39,6 +93,42 @@
       "symbol": "000660",
       "name": "SK하이닉스",
       "query": "SK하이닉스 000660 실적 반도체 공시"
+    },
+    {
+      "market": "KR",
+      "symbol": "042700",
+      "name": "한미반도체",
+      "query": "한미반도체 042700 HBM 반도체 장비 공시"
+    },
+    {
+      "market": "KR",
+      "symbol": "000990",
+      "name": "DB하이텍",
+      "query": "DB하이텍 000990 파운드리 반도체 공시"
+    },
+    {
+      "market": "KR",
+      "symbol": "058470",
+      "name": "리노공업",
+      "query": "리노공업 058470 반도체 테스트 공시"
+    },
+    {
+      "market": "KR",
+      "symbol": "403870",
+      "name": "HPSP",
+      "query": "HPSP 403870 반도체 장비 공시"
+    },
+    {
+      "market": "KR",
+      "symbol": "039030",
+      "name": "이오테크닉스",
+      "query": "이오테크닉스 039030 반도체 레이저 장비 공시"
+    },
+    {
+      "market": "KR",
+      "symbol": "240810",
+      "name": "원익IPS",
+      "query": "원익IPS 240810 반도체 장비 공시"
     }
   ],
   "reporting": {
