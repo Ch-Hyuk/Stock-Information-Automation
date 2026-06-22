@@ -12,6 +12,12 @@ from typing import Any, Iterable
 SCOPES = ["https://www.googleapis.com/auth/calendar"]
 DEFAULT_CONFIG = "config.json"
 DEFAULT_TIMEZONE = "Asia/Seoul"
+US_TICKER_NAMES = {
+    "AAPL": "애플",
+    "MSFT": "마이크로소프트",
+    "NVDA": "엔비디아",
+    "TSLA": "테슬라",
+}
 
 
 @dataclass(frozen=True)
@@ -126,10 +132,11 @@ def fetch_us_events(tickers: Iterable[str], lookahead_days: int) -> list[StockEv
 
         earnings_date = extract_earnings_date(calendar)
         if earnings_date and today <= earnings_date <= until:
+            company_name = US_TICKER_NAMES.get(symbol, symbol)
             events.append(
                 StockEvent(
-                    summary=f"{symbol} earnings",
-                    description=f"Earnings date collected from Yahoo Finance for {symbol}.",
+                    summary=f"[해외주식] {company_name}({symbol}) 실적 발표",
+                    description=f"{company_name}({symbol})의 실적 발표 예정일입니다.\n출처: Yahoo Finance",
                     start_date=earnings_date,
                     event_type="earnings",
                     source="yfinance",
@@ -179,8 +186,12 @@ def fetch_recent_dividend_events(ticker: Any, symbol: str, today: dt.date, until
             continue
         events.append(
             StockEvent(
-                summary=f"{symbol} dividend",
-                description=f"Dividend event collected from Yahoo Finance. Amount: {amount}",
+                summary=f"[해외주식] {US_TICKER_NAMES.get(symbol, symbol)}({symbol}) 배당",
+                description=(
+                    f"{US_TICKER_NAMES.get(symbol, symbol)}({symbol})의 배당 일정입니다.\n"
+                    f"배당 금액: {amount}\n"
+                    "출처: Yahoo Finance"
+                ),
                 start_date=dividend_date,
                 event_type="dividend",
                 source="yfinance",
@@ -261,10 +272,10 @@ def fetch_korea_dart_events(config: dict[str, Any]) -> list[StockEvent]:
             description = "\n".join(
                 line
                 for line in [
-                    f"Report: {report_name}",
-                    f"Company: {corp_name}",
-                    f"Stock code: {stock_code}" if stock_code else "",
-                    f"DART receipt no: {receipt_no}" if receipt_no else "",
+                    f"공시명: {report_name}",
+                    f"회사명: {corp_name}",
+                    f"종목코드: {stock_code}" if stock_code else "",
+                    f"DART 접수번호: {receipt_no}" if receipt_no else "",
                     dart_url,
                 ]
                 if line
@@ -272,7 +283,7 @@ def fetch_korea_dart_events(config: dict[str, Any]) -> list[StockEvent]:
 
             events.append(
                 StockEvent(
-                    summary=f"[DART] {corp_name}: {report_name}",
+                    summary=f"[국내공시] {corp_name}: {report_name}",
                     description=description,
                     start_date=received_date,
                     event_type=classify_dart_event(report_name),
@@ -336,14 +347,14 @@ def dedupe_events(events: Iterable[StockEvent]) -> list[StockEvent]:
     return unique
 
 
-def get_existing_event_uids(service: Any, calendar_id: str, events: list[StockEvent]) -> set[str]:
+def get_existing_events_by_uid(service: Any, calendar_id: str, events: list[StockEvent]) -> dict[str, dict[str, Any]]:
     event_dates = [event.start_date for event in events]
     if not event_dates:
-        return set()
+        return {}
 
     time_min = dt.datetime.combine(min(event_dates) - dt.timedelta(days=1), dt.time.min, tzinfo=dt.timezone.utc)
     time_max = dt.datetime.combine(max(event_dates) + dt.timedelta(days=2), dt.time.min, tzinfo=dt.timezone.utc)
-    existing: set[str] = set()
+    existing: dict[str, dict[str, Any]] = {}
     page_token = None
 
     while True:
@@ -364,12 +375,21 @@ def get_existing_event_uids(service: Any, calendar_id: str, events: list[StockEv
             private_props = item.get("extendedProperties", {}).get("private", {})
             uid = private_props.get("stockCalendarAgentUid")
             if uid:
-                existing.add(uid)
+                existing[uid] = item
         page_token = response.get("nextPageToken")
         if not page_token:
             break
 
     return existing
+
+
+def event_needs_update(existing_event: dict[str, Any], new_event: dict[str, Any]) -> bool:
+    return (
+        existing_event.get("summary") != new_event.get("summary")
+        or existing_event.get("description") != new_event.get("description")
+        or existing_event.get("start", {}).get("date") != new_event.get("start", {}).get("date")
+        or existing_event.get("end", {}).get("date") != new_event.get("end", {}).get("date")
+    )
 
 
 def to_google_event(event: StockEvent, timezone: str) -> dict[str, Any]:
@@ -397,23 +417,35 @@ def register_to_calendar(config: dict[str, Any], dry_run: bool = False) -> int:
     service = get_calendar_service()
     calendar_id = config["calendar_id"]
     timezone = config["timezone"]
-    existing_uids = get_existing_event_uids(service, calendar_id, events)
+    existing_events = get_existing_events_by_uid(service, calendar_id, events)
 
     created_count = 0
+    updated_count = 0
     for event in events:
-        if event.uid in existing_uids:
-            print(f"Skipping existing event: {event.summary}")
+        event_body = to_google_event(event, timezone)
+        existing_event = existing_events.get(event.uid)
+        if existing_event:
+            if event_needs_update(existing_event, event_body):
+                updated = (
+                    service.events()
+                    .update(calendarId=calendar_id, eventId=existing_event["id"], body={**existing_event, **event_body})
+                    .execute()
+                )
+                updated_count += 1
+                print(f"Updated event: {event.summary} - {updated.get('htmlLink')}")
+            else:
+                print(f"Skipping existing event: {event.summary}")
             continue
 
         created = (
             service.events()
-            .insert(calendarId=calendar_id, body=to_google_event(event, timezone))
+            .insert(calendarId=calendar_id, body=event_body)
             .execute()
         )
         created_count += 1
         print(f"Created event: {event.summary} - {created.get('htmlLink')}")
 
-    print(f"Done. Created {created_count} event(s).")
+    print(f"Done. Created {created_count} event(s), updated {updated_count} event(s).")
     return created_count
 
 
