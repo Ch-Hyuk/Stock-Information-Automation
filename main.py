@@ -96,6 +96,10 @@ def fetch_us_events(tickers: Iterable[str], lookahead_days: int) -> list[StockEv
         print("yfinance is not installed; skipping US market events.")
         return []
 
+    cache_dir = Path(".cache") / "yfinance"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    yf.set_tz_cache_location(str(cache_dir))
+
     today = dt.date.today()
     until = today + dt.timedelta(days=lookahead_days)
     events: list[StockEvent] = []

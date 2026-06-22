@@ -2,6 +2,7 @@ __pycache__/
 *.py[cod]
 .venv/
 venv/
+.cache/
 credentials.json
 token.json
 .env
