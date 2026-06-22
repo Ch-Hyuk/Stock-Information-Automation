@@ -3,6 +3,51 @@
   "timezone": "Asia/Seoul",
   "lookahead_days": 60,
   "us_tickers": ["AAPL", "MSFT", "NVDA", "TSLA"],
+  "watchlist": [
+    {
+      "market": "US",
+      "symbol": "AAPL",
+      "name": "애플",
+      "query": "AAPL Apple stock earnings"
+    },
+    {
+      "market": "US",
+      "symbol": "MSFT",
+      "name": "마이크로소프트",
+      "query": "MSFT Microsoft stock earnings"
+    },
+    {
+      "market": "US",
+      "symbol": "NVDA",
+      "name": "엔비디아",
+      "query": "NVDA NVIDIA stock earnings AI chip"
+    },
+    {
+      "market": "US",
+      "symbol": "TSLA",
+      "name": "테슬라",
+      "query": "TSLA Tesla stock earnings delivery"
+    },
+    {
+      "market": "KR",
+      "symbol": "005930",
+      "name": "삼성전자",
+      "query": "삼성전자 005930 실적 배당 공시"
+    },
+    {
+      "market": "KR",
+      "symbol": "000660",
+      "name": "SK하이닉스",
+      "query": "SK하이닉스 000660 실적 반도체 공시"
+    }
+  ],
+  "reporting": {
+    "enabled": true,
+    "output_dir": "reports",
+    "news_limit": 5,
+    "disclosure_limit": 5,
+    "dart_recent_days": 14
+  },
   "korea_dart": {
     "enabled": true,
     "recent_days": 7,

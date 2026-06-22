@@ -2,11 +2,15 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import html
 import json
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
+from urllib.parse import quote_plus
+from xml.etree import ElementTree
 
 
 SCOPES = ["https://www.googleapis.com/auth/calendar"]
@@ -37,6 +41,23 @@ class StockEvent:
         return f"stock-calendar-agent:{self.source}:{self.event_type}:{symbol}:{key}"
 
 
+@dataclass(frozen=True)
+class WatchlistItem:
+    market: str
+    symbol: str
+    name: str
+    query: str
+
+
+@dataclass(frozen=True)
+class ReportEntry:
+    title: str
+    url: str
+    source: str
+    published_at: str = ""
+    summary: str = ""
+
+
 def load_config(path: str) -> dict[str, Any]:
     config_path = Path(path)
     if not config_path.exists():
@@ -50,8 +71,33 @@ def load_config(path: str) -> dict[str, Any]:
     config.setdefault("lookahead_days", 60)
     config.setdefault("us_tickers", [])
     config.setdefault("korea_dart", {})
+    config.setdefault("watchlist", build_default_watchlist(config))
+    config.setdefault("reporting", {})
     config.setdefault("manual_events", [])
     return config
+
+
+def build_default_watchlist(config: dict[str, Any]) -> list[dict[str, str]]:
+    items: list[dict[str, str]] = []
+    for symbol in config.get("us_tickers", []):
+        clean_symbol = str(symbol).strip().upper()
+        if not clean_symbol:
+            continue
+        items.append(
+            {
+                "market": "US",
+                "symbol": clean_symbol,
+                "name": US_TICKER_NAMES.get(clean_symbol, clean_symbol),
+                "query": f"{clean_symbol} stock earnings dividend",
+            }
+        )
+
+    for symbol in config.get("korea_dart", {}).get("stock_codes", []):
+        clean_symbol = str(symbol).strip().zfill(6)
+        if not clean_symbol:
+            continue
+        items.append({"market": "KR", "symbol": clean_symbol, "name": clean_symbol, "query": clean_symbol})
+    return items
 
 
 def parse_date(value: Any) -> dt.date | None:
@@ -103,6 +149,12 @@ def get_calendar_service(token_path: str = "token.json"):
     return build("calendar", "v3", credentials=creds)
 
 
+def configure_yfinance_cache(yf: Any) -> None:
+    cache_dir = Path(".cache") / "yfinance"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    yf.set_tz_cache_location(str(cache_dir))
+
+
 def fetch_us_events(tickers: Iterable[str], lookahead_days: int) -> list[StockEvent]:
     try:
         import yfinance as yf
@@ -110,9 +162,7 @@ def fetch_us_events(tickers: Iterable[str], lookahead_days: int) -> list[StockEv
         print("yfinance is not installed; skipping US market events.")
         return []
 
-    cache_dir = Path(".cache") / "yfinance"
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    yf.set_tz_cache_location(str(cache_dir))
+    configure_yfinance_cache(yf)
 
     today = dt.date.today()
     until = today + dt.timedelta(days=lookahead_days)
@@ -308,6 +358,257 @@ def classify_dart_event(report_name: str) -> str:
     return "korea-disclosure"
 
 
+def normalize_watchlist(config: dict[str, Any]) -> list[WatchlistItem]:
+    items: list[WatchlistItem] = []
+    for item in config.get("watchlist", []):
+        market = str(item.get("market", "")).strip().upper()
+        symbol = str(item.get("symbol", "")).strip().upper()
+        name = str(item.get("name", symbol)).strip() or symbol
+        query = str(item.get("query", f"{name} {symbol}")).strip()
+        if not market or not symbol:
+            continue
+        if market == "KR":
+            symbol = symbol.zfill(6)
+        items.append(WatchlistItem(market=market, symbol=symbol, name=name, query=query))
+    return items
+
+
+def fetch_yahoo_news(symbol: str, limit: int) -> list[ReportEntry]:
+    try:
+        import yfinance as yf
+    except ImportError:
+        return []
+
+    configure_yfinance_cache(yf)
+
+    try:
+        ticker = yf.Ticker(symbol)
+        raw_news = ticker.news or []
+    except Exception as exc:
+        print(f"Could not fetch Yahoo news for {symbol}: {exc}")
+        return []
+
+    entries: list[ReportEntry] = []
+    for item in raw_news[:limit]:
+        content = item.get("content", item) if isinstance(item, dict) else {}
+        title = content.get("title") or item.get("title", "")
+        url = content.get("canonicalUrl", {}).get("url") or content.get("clickThroughUrl", {}).get("url") or item.get("link", "")
+        provider = content.get("provider", {}).get("displayName") or item.get("publisher", "Yahoo Finance")
+        published = content.get("pubDate") or item.get("providerPublishTime", "")
+        summary = content.get("summary") or item.get("summary", "")
+        if isinstance(published, int):
+            published = dt.datetime.fromtimestamp(published, tz=dt.timezone.utc).date().isoformat()
+        entries.append(
+            ReportEntry(
+                title=clean_text(title),
+                url=url,
+                source=clean_text(provider),
+                published_at=str(published),
+                summary=clean_text(summary),
+            )
+        )
+    return entries
+
+
+def fetch_google_news_rss(query: str, limit: int) -> list[ReportEntry]:
+    try:
+        import requests
+    except ImportError:
+        return []
+
+    url = f"https://news.google.com/rss/search?q={quote_plus(query)}&hl=ko&gl=KR&ceid=KR:ko"
+    try:
+        response = requests.get(url, timeout=20)
+        response.raise_for_status()
+        root = ElementTree.fromstring(response.content)
+    except Exception as exc:
+        print(f"Could not fetch Google News RSS for {query}: {exc}")
+        return []
+
+    entries: list[ReportEntry] = []
+    for item in root.findall("./channel/item")[:limit]:
+        title = item.findtext("title", default="")
+        link = item.findtext("link", default="")
+        published = item.findtext("pubDate", default="")
+        source = item.findtext("source", default="Google News")
+        entries.append(
+            ReportEntry(
+                title=clean_text(title),
+                url=link,
+                source=clean_text(source),
+                published_at=clean_text(published),
+            )
+        )
+    return entries
+
+
+def fetch_dart_report_entries(config: dict[str, Any], stock_code: str, limit: int) -> list[ReportEntry]:
+    dart_config = config.get("korea_dart", {})
+    api_key = os.environ.get("DART_API_KEY") or dart_config.get("api_key")
+    if not api_key:
+        return []
+
+    try:
+        import requests
+    except ImportError:
+        return []
+
+    reporting = config.get("reporting", {})
+    recent_days = int(reporting.get("dart_recent_days", dart_config.get("recent_days", 14)))
+    page_count = int(reporting.get("dart_page_count", 100))
+    include_keywords = reporting.get("dart_keywords", dart_config.get("include_keywords", []))
+    today = dt.date.today()
+    begin = today - dt.timedelta(days=max(recent_days - 1, 0))
+    entries: list[ReportEntry] = []
+
+    for corp_cls in dart_config.get("corp_cls", ["Y", "K"]):
+        params = {
+            "crtfc_key": api_key,
+            "bgn_de": begin.strftime("%Y%m%d"),
+            "end_de": today.strftime("%Y%m%d"),
+            "corp_cls": corp_cls,
+            "sort": "date",
+            "sort_mth": "desc",
+            "page_no": 1,
+            "page_count": page_count,
+        }
+        try:
+            response = requests.get("https://opendart.fss.or.kr/api/list.json", params=params, timeout=20)
+            response.raise_for_status()
+            payload = response.json()
+        except Exception as exc:
+            print(f"Could not fetch DART report entries for {stock_code}: {exc}")
+            continue
+
+        if payload.get("status") != "000":
+            continue
+
+        for item in payload.get("list", []):
+            if item.get("stock_code") != stock_code:
+                continue
+            report_name = item.get("report_nm", "")
+            if include_keywords and not any(keyword in report_name for keyword in include_keywords):
+                continue
+            receipt_no = item.get("rcept_no", "")
+            url = f"https://dart.fss.or.kr/dsaf001/main.do?rcpNo={receipt_no}" if receipt_no else ""
+            entries.append(
+                ReportEntry(
+                    title=clean_text(report_name),
+                    url=url,
+                    source="OpenDART",
+                    published_at=str(parse_date(item.get("rcept_dt")) or item.get("rcept_dt", "")),
+                    summary=f"회사명: {item.get('corp_name', '')} / 종목코드: {stock_code}",
+                )
+            )
+
+    return entries[:limit]
+
+
+def clean_text(value: Any) -> str:
+    text = html.unescape(str(value or ""))
+    text = re.sub(r"<[^>]+>", "", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def markdown_link(entry: ReportEntry) -> str:
+    if entry.url:
+        return f"[{entry.title}]({entry.url})"
+    return entry.title
+
+
+def infer_report_notes(entries: list[ReportEntry]) -> list[str]:
+    notes: list[str] = []
+    keyword_map = {
+        "실적": "실적 관련 내용이 포함되어 있습니다. 매출, 영업이익, 가이던스 변화를 확인하세요.",
+        "배당": "배당 관련 내용이 포함되어 있습니다. 기준일, 지급일, 배당 규모를 확인하세요.",
+        "주주총회": "주주총회 관련 내용이 포함되어 있습니다. 안건과 기준일을 확인하세요.",
+        "증권신고": "자금조달 또는 공모 관련 내용이 포함되어 있습니다. 발행 규모와 희석 가능성을 확인하세요.",
+        "투자설명서": "공모 또는 증권 발행 관련 세부 내용이 포함되어 있습니다.",
+        "earnings": "실적 발표 관련 기사일 수 있습니다. 시장 예상치와 다음 분기 전망을 확인하세요.",
+        "dividend": "배당 관련 기사일 수 있습니다. 배당락일과 배당 수익률을 확인하세요.",
+        "guidance": "가이던스 관련 기사일 수 있습니다. 향후 실적 전망 변화에 주목하세요.",
+    }
+    joined = " ".join(entry.title.lower() for entry in entries)
+    for keyword, note in keyword_map.items():
+        if keyword.lower() in joined and note not in notes:
+            notes.append(note)
+    if not notes and entries:
+        notes.append("최근 기사와 공시 제목 기준으로 주요 이슈를 확인하세요.")
+    return notes
+
+
+def generate_report(config: dict[str, Any]) -> Path | None:
+    reporting = config.get("reporting", {})
+    if not reporting.get("enabled", True):
+        print("Reporting is disabled.")
+        return None
+
+    output_dir = Path(reporting.get("output_dir", "reports"))
+    output_dir.mkdir(parents=True, exist_ok=True)
+    report_date = dt.date.today()
+    report_path = output_dir / f"{report_date.isoformat()}.md"
+    news_limit = int(reporting.get("news_limit", 5))
+    disclosure_limit = int(reporting.get("disclosure_limit", 5))
+    watchlist = normalize_watchlist(config)
+
+    lines = [
+        f"# {report_date.isoformat()} 주식 이벤트 리포트",
+        "",
+        "이 리포트는 관심 종목의 최근 공시와 뉴스 링크를 자동으로 모은 것입니다.",
+        "투자 판단을 대신하지 않으며, 중요한 내용은 원문을 확인하세요.",
+        "",
+    ]
+
+    if not watchlist:
+        lines.extend(["관심 종목이 설정되어 있지 않습니다.", ""])
+    for item in watchlist:
+        lines.extend([f"## {item.name}({item.symbol})", ""])
+
+        if item.market == "KR":
+            disclosures = fetch_dart_report_entries(config, item.symbol, disclosure_limit)
+            news = fetch_google_news_rss(item.query or f"{item.name} {item.symbol}", news_limit)
+        else:
+            disclosures = []
+            news = fetch_yahoo_news(item.symbol, news_limit)
+            if not news:
+                news = fetch_google_news_rss(item.query or f"{item.name} {item.symbol} stock", news_limit)
+
+        lines.append("### 확인 포인트")
+        notes = infer_report_notes(disclosures + news)
+        if notes:
+            lines.extend(f"- {note}" for note in notes)
+        else:
+            lines.append("- 새로 수집된 공시나 뉴스가 없습니다.")
+        lines.append("")
+
+        lines.append("### 공시")
+        if disclosures:
+            for entry in disclosures:
+                date_text = f" ({entry.published_at})" if entry.published_at else ""
+                lines.append(f"- {markdown_link(entry)}{date_text}")
+                if entry.summary:
+                    lines.append(f"  - {entry.summary}")
+        else:
+            lines.append("- 수집된 공시가 없습니다.")
+        lines.append("")
+
+        lines.append("### 뉴스")
+        if news:
+            for entry in news:
+                meta = " / ".join(part for part in [entry.source, entry.published_at] if part)
+                meta_text = f" ({meta})" if meta else ""
+                lines.append(f"- {markdown_link(entry)}{meta_text}")
+                if entry.summary:
+                    lines.append(f"  - {entry.summary}")
+        else:
+            lines.append("- 수집된 뉴스가 없습니다.")
+        lines.append("")
+
+    report_path.write_text("\n".join(lines), encoding="utf-8")
+    print(f"Report generated: {report_path}")
+    return report_path
+
+
 def fetch_manual_events(config: dict[str, Any]) -> list[StockEvent]:
     events: list[StockEvent] = []
     for item in config.get("manual_events", []):
@@ -453,13 +754,19 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Collect stock events and add them to Google Calendar.")
     parser.add_argument("--config", default=DEFAULT_CONFIG, help="Path to config JSON file.")
     parser.add_argument("--dry-run", action="store_true", help="Print events without writing to Google Calendar.")
+    parser.add_argument("--skip-calendar", action="store_true", help="Generate reports without writing calendar events.")
+    parser.add_argument("--skip-report", action="store_true", help="Update calendar events without generating a report.")
+    parser.add_argument("--report-only", action="store_true", help="Only generate the daily stock report.")
     return parser
 
 
 def main() -> None:
     args = build_parser().parse_args()
     config = load_config(args.config)
-    register_to_calendar(config, dry_run=args.dry_run)
+    if not args.skip_calendar and not args.report_only:
+        register_to_calendar(config, dry_run=args.dry_run)
+    if not args.skip_report or args.report_only:
+        generate_report(config)
 
 
 if __name__ == "__main__":
