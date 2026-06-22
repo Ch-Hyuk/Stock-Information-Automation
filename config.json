@@ -3,13 +3,5 @@
   "timezone": "Asia/Seoul",
   "lookahead_days": 60,
   "us_tickers": ["AAPL", "MSFT", "NVDA", "TSLA"],
-  "manual_events": [
-    {
-      "date": "2026-06-22",
-      "summary": "Sample IPO subscription",
-      "description": "Replace this sample with a Korean market IPO, earnings, or dividend event.",
-      "type": "ipo",
-      "symbol": "SAMPLE"
-    }
-  ]
+  "manual_events": []
 }
