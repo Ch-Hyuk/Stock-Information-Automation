@@ -26,4 +26,6 @@ jobs:
         run: echo '${{ secrets.GOOGLE_TOKEN_JSON }}' > token.json
 
       - name: Run stock calendar agent
+        env:
+          DART_API_KEY: ${{ secrets.DART_API_KEY }}
         run: python main.py

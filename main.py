@@ -22,11 +22,13 @@ class StockEvent:
     event_type: str
     source: str
     symbol: str | None = None
+    external_id: str | None = None
 
     @property
     def uid(self) -> str:
         symbol = self.symbol or "market"
-        return f"stock-calendar-agent:{self.source}:{self.event_type}:{symbol}:{self.start_date.isoformat()}"
+        key = self.external_id or self.start_date.isoformat()
+        return f"stock-calendar-agent:{self.source}:{self.event_type}:{symbol}:{key}"
 
 
 def load_config(path: str) -> dict[str, Any]:
@@ -41,6 +43,7 @@ def load_config(path: str) -> dict[str, Any]:
     config.setdefault("timezone", DEFAULT_TIMEZONE)
     config.setdefault("lookahead_days", 60)
     config.setdefault("us_tickers", [])
+    config.setdefault("korea_dart", {})
     config.setdefault("manual_events", [])
     return config
 
@@ -56,6 +59,11 @@ def parse_date(value: Any) -> dt.date | None:
         clean = value.strip()
         if not clean:
             return None
+        if len(clean) == 8 and clean.isdigit():
+            try:
+                return dt.date(int(clean[:4]), int(clean[4:6]), int(clean[6:8]))
+            except ValueError:
+                return None
         try:
             return dt.date.fromisoformat(clean[:10])
         except ValueError:
@@ -182,6 +190,113 @@ def fetch_recent_dividend_events(ticker: Any, symbol: str, today: dt.date, until
     return events
 
 
+def fetch_korea_dart_events(config: dict[str, Any]) -> list[StockEvent]:
+    dart_config = config.get("korea_dart", {})
+    if not dart_config.get("enabled", False):
+        return []
+
+    api_key = os.environ.get("DART_API_KEY") or dart_config.get("api_key")
+    if not api_key:
+        print("DART_API_KEY is not set; skipping Korean DART events.")
+        return []
+
+    try:
+        import requests
+    except ImportError:
+        print("requests is not installed; skipping Korean DART events.")
+        return []
+
+    recent_days = int(dart_config.get("recent_days", 7))
+    page_count = int(dart_config.get("page_count", 100))
+    include_keywords = dart_config.get("include_keywords", [])
+    stock_codes = {str(code).zfill(6) for code in dart_config.get("stock_codes", [])}
+    corp_cls_values = dart_config.get("corp_cls", ["Y", "K"])
+
+    today = dt.date.today()
+    begin = today - dt.timedelta(days=max(recent_days - 1, 0))
+    events: list[StockEvent] = []
+
+    for corp_cls in corp_cls_values:
+        params = {
+            "crtfc_key": api_key,
+            "bgn_de": begin.strftime("%Y%m%d"),
+            "end_de": today.strftime("%Y%m%d"),
+            "corp_cls": corp_cls,
+            "sort": "date",
+            "sort_mth": "desc",
+            "page_no": 1,
+            "page_count": page_count,
+        }
+
+        try:
+            response = requests.get("https://opendart.fss.or.kr/api/list.json", params=params, timeout=20)
+            response.raise_for_status()
+            payload = response.json()
+        except Exception as exc:
+            print(f"Could not fetch DART disclosures for corp_cls={corp_cls}: {exc}")
+            continue
+
+        status = payload.get("status")
+        if status == "013":
+            continue
+        if status != "000":
+            print(f"DART API returned status={status}: {payload.get('message')}")
+            continue
+
+        for item in payload.get("list", []):
+            stock_code = item.get("stock_code", "")
+            report_name = item.get("report_nm", "")
+            if stock_codes and stock_code not in stock_codes:
+                continue
+            if include_keywords and not any(keyword in report_name for keyword in include_keywords):
+                continue
+
+            received_date = parse_date(item.get("rcept_dt"))
+            if not received_date:
+                continue
+
+            corp_name = item.get("corp_name", "Unknown")
+            receipt_no = item.get("rcept_no", "")
+            dart_url = f"https://dart.fss.or.kr/dsaf001/main.do?rcpNo={receipt_no}" if receipt_no else ""
+            description = "\n".join(
+                line
+                for line in [
+                    f"Report: {report_name}",
+                    f"Company: {corp_name}",
+                    f"Stock code: {stock_code}" if stock_code else "",
+                    f"DART receipt no: {receipt_no}" if receipt_no else "",
+                    dart_url,
+                ]
+                if line
+            )
+
+            events.append(
+                StockEvent(
+                    summary=f"[DART] {corp_name}: {report_name}",
+                    description=description,
+                    start_date=received_date,
+                    event_type=classify_dart_event(report_name),
+                    source="opendart",
+                    symbol=stock_code or item.get("corp_code"),
+                    external_id=receipt_no,
+                )
+            )
+
+    return events
+
+
+def classify_dart_event(report_name: str) -> str:
+    if "배당" in report_name:
+        return "korea-dividend-disclosure"
+    if "영업(잠정)실적" in report_name or "잠정실적" in report_name:
+        return "korea-earnings-disclosure"
+    if "주주총회" in report_name:
+        return "korea-shareholder-meeting-disclosure"
+    if "증권신고" in report_name or "투자설명서" in report_name:
+        return "korea-offering-disclosure"
+    return "korea-disclosure"
+
+
 def fetch_manual_events(config: dict[str, Any]) -> list[StockEvent]:
     events: list[StockEvent] = []
     for item in config.get("manual_events", []):
@@ -205,6 +320,7 @@ def fetch_manual_events(config: dict[str, Any]) -> list[StockEvent]:
 def fetch_stock_events(config: dict[str, Any]) -> list[StockEvent]:
     events = []
     events.extend(fetch_us_events(config["us_tickers"], int(config["lookahead_days"])))
+    events.extend(fetch_korea_dart_events(config))
     events.extend(fetch_manual_events(config))
     return dedupe_events(events)
 
@@ -220,9 +336,13 @@ def dedupe_events(events: Iterable[StockEvent]) -> list[StockEvent]:
     return unique
 
 
-def get_existing_event_uids(service: Any, calendar_id: str, lookahead_days: int) -> set[str]:
-    now = dt.datetime.now(dt.timezone.utc)
-    time_max = now + dt.timedelta(days=lookahead_days)
+def get_existing_event_uids(service: Any, calendar_id: str, events: list[StockEvent]) -> set[str]:
+    event_dates = [event.start_date for event in events]
+    if not event_dates:
+        return set()
+
+    time_min = dt.datetime.combine(min(event_dates) - dt.timedelta(days=1), dt.time.min, tzinfo=dt.timezone.utc)
+    time_max = dt.datetime.combine(max(event_dates) + dt.timedelta(days=2), dt.time.min, tzinfo=dt.timezone.utc)
     existing: set[str] = set()
     page_token = None
 
@@ -231,7 +351,7 @@ def get_existing_event_uids(service: Any, calendar_id: str, lookahead_days: int)
             service.events()
             .list(
                 calendarId=calendar_id,
-                timeMin=now.isoformat().replace("+00:00", "Z"),
+                timeMin=time_min.isoformat().replace("+00:00", "Z"),
                 timeMax=time_max.isoformat().replace("+00:00", "Z"),
                 singleEvents=True,
                 orderBy="startTime",
@@ -277,7 +397,7 @@ def register_to_calendar(config: dict[str, Any], dry_run: bool = False) -> int:
     service = get_calendar_service()
     calendar_id = config["calendar_id"]
     timezone = config["timezone"]
-    existing_uids = get_existing_event_uids(service, calendar_id, int(config["lookahead_days"]))
+    existing_uids = get_existing_event_uids(service, calendar_id, events)
 
     created_count = 0
     for event in events:

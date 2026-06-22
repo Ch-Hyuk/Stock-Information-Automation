@@ -3,5 +3,18 @@
   "timezone": "Asia/Seoul",
   "lookahead_days": 60,
   "us_tickers": ["AAPL", "MSFT", "NVDA", "TSLA"],
+  "korea_dart": {
+    "enabled": true,
+    "recent_days": 7,
+    "corp_cls": ["Y", "K"],
+    "stock_codes": [],
+    "include_keywords": [
+      "영업(잠정)실적",
+      "현금ㆍ현물배당",
+      "주주총회",
+      "증권신고",
+      "투자설명서"
+    ]
+  },
   "manual_events": []
 }
