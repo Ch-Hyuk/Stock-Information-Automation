@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+from email.message import EmailMessage
 from email.utils import parsedate_to_datetime
 import html
 import json
 import os
 import re
+import smtplib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
@@ -891,6 +893,64 @@ def generate_report(config: dict[str, Any]) -> Path | None:
     return report_path
 
 
+def smtp_config_from_env() -> dict[str, str]:
+    return {
+        "host": os.environ.get("SMTP_HOST", ""),
+        "port": os.environ.get("SMTP_PORT", "587"),
+        "user": os.environ.get("SMTP_USER", ""),
+        "password": os.environ.get("SMTP_PASSWORD", ""),
+        "to": os.environ.get("REPORT_EMAIL_TO", ""),
+        "from": os.environ.get("REPORT_EMAIL_FROM", "") or os.environ.get("SMTP_USER", ""),
+    }
+
+
+def should_send_email() -> bool:
+    config = smtp_config_from_env()
+    required = ["host", "port", "user", "password", "to", "from"]
+    return all(config.get(key) for key in required)
+
+
+def send_report_email(report_path: Path | None) -> bool:
+    if report_path is None:
+        print("No report file was generated; skipping email.")
+        return False
+    if not report_path.exists():
+        print(f"Report file does not exist: {report_path}; skipping email.")
+        return False
+    if not should_send_email():
+        print("SMTP email secrets are not fully configured; skipping email.")
+        return False
+
+    config = smtp_config_from_env()
+    report_date = dt.date.today().isoformat()
+    body = report_path.read_text(encoding="utf-8")
+    message = EmailMessage()
+    message["Subject"] = f"[주식 리포트] {report_date} 일일 시장/종목 요약"
+    message["From"] = config["from"]
+    message["To"] = config["to"]
+    message.set_content(body)
+    message.add_attachment(
+        body.encode("utf-8"),
+        maintype="text",
+        subtype="markdown",
+        filename=report_path.name,
+    )
+
+    port = int(config["port"])
+    if port == 465:
+        with smtplib.SMTP_SSL(config["host"], port, timeout=30) as smtp:
+            smtp.login(config["user"], config["password"])
+            smtp.send_message(message)
+    else:
+        with smtplib.SMTP(config["host"], port, timeout=30) as smtp:
+            smtp.starttls()
+            smtp.login(config["user"], config["password"])
+            smtp.send_message(message)
+
+    print(f"Report email sent to {config['to']}.")
+    return True
+
+
 def fetch_manual_events(config: dict[str, Any]) -> list[StockEvent]:
     events: list[StockEvent] = []
     for item in config.get("manual_events", []):
@@ -1039,16 +1099,20 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--skip-calendar", action="store_true", help="Generate reports without writing calendar events.")
     parser.add_argument("--skip-report", action="store_true", help="Update calendar events without generating a report.")
     parser.add_argument("--report-only", action="store_true", help="Only generate the daily stock report.")
+    parser.add_argument("--skip-email", action="store_true", help="Do not email the generated report.")
     return parser
 
 
 def main() -> None:
     args = build_parser().parse_args()
     config = load_config(args.config)
+    report_path = None
     if not args.skip_calendar and not args.report_only:
         register_to_calendar(config, dry_run=args.dry_run)
     if not args.skip_report or args.report_only:
-        generate_report(config)
+        report_path = generate_report(config)
+    if not args.skip_email and not args.dry_run and not args.skip_report:
+        send_report_email(report_path)
 
 
 if __name__ == "__main__":

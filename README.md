@@ -217,6 +217,35 @@ GitHub Actions 실행 시 새 리포트가 생성되면 `reports/` 폴더에 자
 
 - `GOOGLE_TOKEN_JSON`: Google Calendar 인증 토큰
 - `DART_API_KEY`: OpenDART 무료 API 인증키
+- `SMTP_HOST`: SMTP 서버 주소. Gmail 예시는 `smtp.gmail.com`
+- `SMTP_PORT`: SMTP 포트. Gmail STARTTLS 예시는 `587`
+- `SMTP_USER`: SMTP 로그인 이메일 주소
+- `SMTP_PASSWORD`: SMTP 비밀번호 또는 앱 비밀번호
+- `REPORT_EMAIL_TO`: 리포트를 받을 이메일 주소
+- `REPORT_EMAIL_FROM`: 보내는 이메일 주소. 생략하면 `SMTP_USER`를 사용합니다.
+
+## 이메일 발송
+
+리포트가 생성되면 GitHub Actions에서 이메일 발송을 시도합니다. SMTP 관련 Secret이 모두 설정되어 있지 않으면 이메일 발송만 건너뛰고, 캘린더 갱신과 리포트 생성은 그대로 진행됩니다.
+
+Gmail을 사용할 경우 일반 로그인 비밀번호 대신 Google 계정의 **앱 비밀번호**를 발급받아 `SMTP_PASSWORD`에 넣는 방식을 권장합니다.
+
+Gmail 예시:
+
+```text
+SMTP_HOST=smtp.gmail.com
+SMTP_PORT=587
+SMTP_USER=your-email@gmail.com
+SMTP_PASSWORD=Google 앱 비밀번호
+REPORT_EMAIL_TO=받을 이메일 주소
+REPORT_EMAIL_FROM=your-email@gmail.com
+```
+
+로컬에서 이메일 없이 실행하려면:
+
+```powershell
+python main.py --skip-email
+```
 
 ## 보안 주의
 
