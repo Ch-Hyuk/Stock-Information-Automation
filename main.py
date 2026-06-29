@@ -60,6 +60,13 @@ class WatchlistItem:
 
 
 @dataclass(frozen=True)
+class MarketIndex:
+    symbol: str
+    name: str
+    query: str
+
+
+@dataclass(frozen=True)
 class ReportEntry:
     title: str
     url: str
@@ -83,6 +90,7 @@ def load_config(path: str) -> dict[str, Any]:
     config.setdefault("us_tickers", [])
     config.setdefault("korea_dart", {})
     config.setdefault("watchlist", build_default_watchlist(config))
+    config.setdefault("market_overview", {})
     config.setdefault("reporting", {})
     config.setdefault("manual_events", [])
     return config
@@ -382,6 +390,72 @@ def normalize_watchlist(config: dict[str, Any]) -> list[WatchlistItem]:
             symbol = symbol.zfill(6)
         items.append(WatchlistItem(market=market, symbol=symbol, name=name, query=query))
     return items
+
+
+def normalize_market_indexes(config: dict[str, Any]) -> list[MarketIndex]:
+    market_config = config.get("market_overview", {})
+    if not market_config.get("enabled", True):
+        return []
+
+    indexes: list[MarketIndex] = []
+    for item in market_config.get("indexes", []):
+        symbol = str(item.get("symbol", "")).strip()
+        name = str(item.get("name", symbol)).strip() or symbol
+        query = str(item.get("query", f"{name} stock market")).strip()
+        if not symbol:
+            continue
+        indexes.append(MarketIndex(symbol=symbol, name=name, query=query))
+    return indexes
+
+
+def fetch_market_snapshot(index: MarketIndex) -> ReportEntry:
+    try:
+        import yfinance as yf
+    except ImportError:
+        return ReportEntry(title=f"{index.name} 지수 정보를 수집하지 못했습니다.", url="", source="Yahoo Finance")
+
+    configure_yfinance_cache(yf)
+
+    try:
+        ticker = yf.Ticker(index.symbol)
+        history = ticker.history(period="5d")
+    except Exception as exc:
+        print(f"Could not fetch market snapshot for {index.symbol}: {exc}")
+        return ReportEntry(title=f"{index.name} 지수 정보를 수집하지 못했습니다.", url="", source="Yahoo Finance")
+
+    if history is None or getattr(history, "empty", True) or "Close" not in history:
+        return ReportEntry(title=f"{index.name} 지수 데이터가 없습니다.", url="", source="Yahoo Finance")
+
+    closes = history["Close"].dropna()
+    if closes.empty:
+        return ReportEntry(title=f"{index.name} 지수 종가 데이터가 없습니다.", url="", source="Yahoo Finance")
+
+    last_close = float(closes.iloc[-1])
+    previous_close = float(closes.iloc[-2]) if len(closes) >= 2 else last_close
+    change = last_close - previous_close
+    change_pct = (change / previous_close * 100) if previous_close else 0.0
+    direction = "상승" if change > 0 else "하락" if change < 0 else "보합"
+    latest_date = parse_date(closes.index[-1])
+    title = f"{index.name}: {last_close:,.2f} ({change:+,.2f}, {change_pct:+.2f}%) {direction}"
+    return ReportEntry(
+        title=title,
+        url=f"https://finance.yahoo.com/quote/{quote_plus(index.symbol)}",
+        source="Yahoo Finance",
+        published_at=(latest_date or dt.date.today()).isoformat(),
+        summary=f"{index.name}의 최근 종가 기준 지수 동향입니다.",
+    )
+
+
+def fetch_market_overview(config: dict[str, Any]) -> list[tuple[MarketIndex, ReportEntry, list[ReportEntry]]]:
+    market_config = config.get("market_overview", {})
+    news_limit = int(market_config.get("news_limit", 3))
+    overview: list[tuple[MarketIndex, ReportEntry, list[ReportEntry]]] = []
+
+    for index in normalize_market_indexes(config):
+        snapshot = fetch_market_snapshot(index)
+        news = sort_report_entries(fetch_google_news_rss(index.query, news_limit))[:news_limit]
+        overview.append((index, snapshot, news))
+    return overview
 
 
 def fetch_yahoo_news(symbol: str, limit: int) -> list[ReportEntry]:
@@ -688,6 +762,36 @@ def build_major_issue_summary(
     return lines
 
 
+def build_market_overview_section(
+    overview: list[tuple[MarketIndex, ReportEntry, list[ReportEntry]]],
+    translation_cache: dict[str, str],
+) -> list[str]:
+    lines = ["## 주요 시장 브리핑", ""]
+    if not overview:
+        lines.extend(["- 시장 브리핑 수집 대상이 설정되어 있지 않습니다.", ""])
+        return lines
+
+    for index, snapshot, news in overview:
+        lines.extend([f"### {index.name}({index.symbol})", ""])
+        lines.append(f"- {markdown_link_with_translation(snapshot, translation_cache)}")
+        if snapshot.summary:
+            lines.append(f"  - {snapshot.summary}")
+        if news:
+            lines.append("- 관련 최신 뉴스")
+            for entry in sort_report_entries(news):
+                meta = " / ".join(part for part in [entry.source, entry.published_at] if part)
+                meta_text = f" ({meta})" if meta else ""
+                lines.append(f"  - {markdown_link_with_translation(entry, translation_cache)}{meta_text}")
+                original_note = original_title_note(entry, translation_cache)
+                if original_note:
+                    lines.append(f"    - {original_note.strip()}")
+        else:
+            lines.append("- 관련 뉴스가 수집되지 않았습니다.")
+        lines.append("")
+
+    return lines
+
+
 def generate_report(config: dict[str, Any]) -> Path | None:
     reporting = config.get("reporting", {})
     if not reporting.get("enabled", True):
@@ -703,6 +807,7 @@ def generate_report(config: dict[str, Any]) -> Path | None:
     major_issue_limit = int(reporting.get("major_issue_limit", 10))
     watchlist = normalize_watchlist(config)
     translation_cache = load_translation_cache()
+    market_overview = fetch_market_overview(config)
 
     lines = [
         f"# {report_date.isoformat()} 주식 이벤트 리포트",
@@ -715,6 +820,8 @@ def generate_report(config: dict[str, Any]) -> Path | None:
 
     if not watchlist:
         lines.extend(["관심 종목이 설정되어 있지 않습니다.", ""])
+
+    lines.extend(build_market_overview_section(market_overview, translation_cache))
 
     sections: list[tuple[WatchlistItem, list[ReportEntry], list[ReportEntry], list[str]]] = []
     for item in watchlist:

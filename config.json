@@ -139,6 +139,47 @@
     "dart_recent_days": 14,
     "major_issue_limit": 10
   },
+  "market_overview": {
+    "enabled": true,
+    "news_limit": 3,
+    "indexes": [
+      {
+        "symbol": "^KS11",
+        "name": "코스피",
+        "query": "코스피 증시 반도체 외국인 기관 수급"
+      },
+      {
+        "symbol": "^KQ11",
+        "name": "코스닥",
+        "query": "코스닥 증시 성장주 반도체"
+      },
+      {
+        "symbol": "^IXIC",
+        "name": "나스닥",
+        "query": "Nasdaq market semiconductor AI stocks"
+      },
+      {
+        "symbol": "^GSPC",
+        "name": "S&P 500",
+        "query": "S&P 500 market earnings technology stocks"
+      },
+      {
+        "symbol": "^DJI",
+        "name": "다우존스",
+        "query": "Dow Jones market stocks economy"
+      },
+      {
+        "symbol": "^RUT",
+        "name": "러셀2000",
+        "query": "Russell 2000 small cap market"
+      },
+      {
+        "symbol": "^SOX",
+        "name": "필라델피아 반도체",
+        "query": "Philadelphia Semiconductor Index SOX NVIDIA AMD chip stocks"
+      }
+    ]
+  },
   "korea_dart": {
     "enabled": true,
     "recent_days": 7,
