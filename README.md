@@ -247,6 +247,29 @@ REPORT_EMAIL_FROM=your-email@gmail.com
 python main.py --skip-email
 ```
 
+## 문제 해결
+
+GitHub Actions에서 아래 오류가 나오면 Google Calendar 인증 토큰이 만료되었거나 철회된 상태입니다.
+
+```text
+invalid_grant: Token has been expired or revoked.
+```
+
+해결 방법:
+
+1. 로컬에서 기존 `token.json`을 삭제합니다.
+2. `credentials.json`이 있는 상태에서 다시 실행합니다.
+
+```powershell
+python main.py --skip-email
+```
+
+3. 브라우저에서 Google 계정 권한을 다시 승인합니다.
+4. 새로 생성된 `token.json` 전체 내용을 복사합니다.
+5. GitHub 저장소의 `GOOGLE_TOKEN_JSON` Secret 값을 새 `token.json` 내용으로 업데이트합니다.
+
+캘린더 토큰 문제가 생겨도 리포트 생성과 이메일 발송은 계속 시도되도록 되어 있습니다. 다만 Google Calendar 일정 갱신은 새 토큰으로 Secret을 교체해야 다시 정상 동작합니다.
+
 ## 보안 주의
 
 아래 파일은 절대 GitHub에 올리면 안 됩니다.

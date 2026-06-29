@@ -1108,7 +1108,11 @@ def main() -> None:
     config = load_config(args.config)
     report_path = None
     if not args.skip_calendar and not args.report_only:
-        register_to_calendar(config, dry_run=args.dry_run)
+        try:
+            register_to_calendar(config, dry_run=args.dry_run)
+        except Exception as exc:
+            print(f"Calendar update failed: {exc}")
+            print("Continuing with report generation. Refresh GOOGLE_TOKEN_JSON to restore calendar updates.")
     if not args.skip_report or args.report_only:
         report_path = generate_report(config)
     if not args.skip_email and not args.dry_run and not args.skip_report:
