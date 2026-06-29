@@ -92,7 +92,8 @@ python main.py
     "output_dir": "reports",
     "news_limit": 5,
     "disclosure_limit": 5,
-    "dart_recent_days": 14
+    "dart_recent_days": 14,
+    "major_issue_limit": 10
   },
   "korea_dart": {
     "enabled": true,
@@ -170,14 +171,18 @@ reports/2026-06-22.md
 
 리포트에는 종목별로 다음 내용이 들어갑니다.
 
+- 전체 주요 이슈 요약
 - 확인 포인트
 - 최근 DART 공시
-- 최근 뉴스 링크
+- 최신순으로 정렬된 최근 뉴스 링크
 - 기사 또는 공시 원문 링크
+- 영어 기사 제목과 요약의 한국어 번역
 
 해외 종목은 Yahoo Finance 뉴스와 Google News RSS를 활용합니다. 국내 종목은 OpenDART 공시와 Google News RSS를 활용합니다.
 
 GitHub Actions 실행 시 새 리포트가 생성되면 `reports/` 폴더에 자동 커밋됩니다.
+
+영어 기사 제목은 무료 번역 엔드포인트를 통해 한국어 번역을 시도합니다. 번역에 실패하면 원문 제목을 그대로 표시합니다.
 
 ## GitHub Actions
 

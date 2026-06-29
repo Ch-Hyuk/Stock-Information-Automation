@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+from email.utils import parsedate_to_datetime
 import html
 import json
 import os
@@ -65,6 +66,7 @@ class ReportEntry:
     source: str
     published_at: str = ""
     summary: str = ""
+    translated_title: str = ""
 
 
 def load_config(path: str) -> dict[str, Any]:
@@ -519,10 +521,123 @@ def clean_text(value: Any) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
+def parse_report_datetime(value: Any) -> dt.datetime | None:
+    if value is None:
+        return None
+    if isinstance(value, dt.datetime):
+        return value if value.tzinfo else value.replace(tzinfo=dt.timezone.utc)
+    if isinstance(value, dt.date):
+        return dt.datetime.combine(value, dt.time.min, tzinfo=dt.timezone.utc)
+    if isinstance(value, int):
+        return dt.datetime.fromtimestamp(value, tz=dt.timezone.utc)
+
+    text = str(value).strip()
+    if not text:
+        return None
+    if text.isdigit():
+        if len(text) == 8:
+            parsed_date = parse_date(text)
+            if parsed_date:
+                return dt.datetime.combine(parsed_date, dt.time.min, tzinfo=dt.timezone.utc)
+        try:
+            return dt.datetime.fromtimestamp(int(text), tz=dt.timezone.utc)
+        except (OverflowError, ValueError):
+            return None
+    try:
+        parsed = dt.datetime.fromisoformat(text.replace("Z", "+00:00"))
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=dt.timezone.utc)
+    except ValueError:
+        pass
+    try:
+        parsed = parsedate_to_datetime(text)
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=dt.timezone.utc)
+    except (TypeError, ValueError):
+        return None
+
+
+def sort_report_entries(entries: list[ReportEntry]) -> list[ReportEntry]:
+    return sorted(
+        entries,
+        key=lambda entry: parse_report_datetime(entry.published_at) or dt.datetime.min.replace(tzinfo=dt.timezone.utc),
+        reverse=True,
+    )
+
+
+def is_likely_english(text: str) -> bool:
+    if re.search(r"[가-힣]", text):
+        return False
+    letters = re.findall(r"[A-Za-z]", text)
+    return len(letters) >= 12
+
+
+def load_translation_cache() -> dict[str, str]:
+    cache_path = Path(".cache") / "translations.json"
+    if not cache_path.exists():
+        return {}
+    try:
+        return json.loads(cache_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def save_translation_cache(cache: dict[str, str]) -> None:
+    cache_path = Path(".cache") / "translations.json"
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    cache_path.write_text(json.dumps(cache, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
+
+
+def translate_to_korean(text: str, cache: dict[str, str]) -> str:
+    clean = clean_text(text)
+    if not clean or not is_likely_english(clean):
+        return clean
+    if clean in cache:
+        return cache[clean]
+
+    try:
+        import requests
+
+        response = requests.get(
+            "https://translate.googleapis.com/translate_a/single",
+            params={"client": "gtx", "sl": "auto", "tl": "ko", "dt": "t", "q": clean},
+            timeout=15,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        translated = "".join(part[0] for part in payload[0] if part and part[0])
+        translated = clean_text(translated)
+    except Exception as exc:
+        print(f"Could not translate title: {exc}")
+        translated = clean
+
+    cache[clean] = translated or clean
+    return cache[clean]
+
+
+def title_for_report(entry: ReportEntry, translation_cache: dict[str, str]) -> str:
+    if entry.translated_title:
+        return entry.translated_title
+    return translate_to_korean(entry.title, translation_cache)
+
+
 def markdown_link(entry: ReportEntry) -> str:
+    title = entry.translated_title or entry.title
     if entry.url:
-        return f"[{entry.title}]({entry.url})"
-    return entry.title
+        return f"[{title}]({entry.url})"
+    return title
+
+
+def markdown_link_with_translation(entry: ReportEntry, translation_cache: dict[str, str]) -> str:
+    title = title_for_report(entry, translation_cache)
+    if entry.url:
+        return f"[{title}]({entry.url})"
+    return title
+
+
+def original_title_note(entry: ReportEntry, translation_cache: dict[str, str]) -> str:
+    translated = title_for_report(entry, translation_cache)
+    if translated and translated != entry.title:
+        return f"  - 원문 제목: {entry.title}"
+    return ""
 
 
 def infer_report_notes(entries: list[ReportEntry]) -> list[str]:
@@ -537,13 +652,40 @@ def infer_report_notes(entries: list[ReportEntry]) -> list[str]:
         "dividend": "배당 관련 기사일 수 있습니다. 배당락일과 배당 수익률을 확인하세요.",
         "guidance": "가이던스 관련 기사일 수 있습니다. 향후 실적 전망 변화에 주목하세요.",
     }
-    joined = " ".join(entry.title.lower() for entry in entries)
+    joined = " ".join(f"{entry.title} {entry.summary}".lower() for entry in entries)
     for keyword, note in keyword_map.items():
         if keyword.lower() in joined and note not in notes:
             notes.append(note)
     if not notes and entries:
         notes.append("최근 기사와 공시 제목 기준으로 주요 이슈를 확인하세요.")
     return notes
+
+
+def build_major_issue_summary(
+    sections: list[tuple[WatchlistItem, list[ReportEntry], list[ReportEntry], list[str]]],
+    translation_cache: dict[str, str],
+    max_items: int,
+) -> list[str]:
+    candidates: list[tuple[dt.datetime, WatchlistItem, str, ReportEntry]] = []
+    for item, disclosures, news, _notes in sections:
+        for entry in disclosures:
+            published = parse_report_datetime(entry.published_at) or dt.datetime.min.replace(tzinfo=dt.timezone.utc)
+            candidates.append((published, item, "공시", entry))
+        for entry in news:
+            published = parse_report_datetime(entry.published_at) or dt.datetime.min.replace(tzinfo=dt.timezone.utc)
+            candidates.append((published, item, "뉴스", entry))
+
+    lines = ["## 주요 이슈 요약", ""]
+    if not candidates:
+        lines.extend(["- 새로 수집된 공시나 뉴스가 없습니다.", ""])
+        return lines
+
+    for published, item, entry_type, entry in sorted(candidates, key=lambda row: row[0], reverse=True)[:max_items]:
+        date_text = published.date().isoformat() if published.year > 1900 else "날짜 미상"
+        source_text = f"{entry.source}, {date_text}" if entry.source else date_text
+        lines.append(f"- **{item.name}({item.symbol})** [{entry_type}] {title_for_report(entry, translation_cache)} ({source_text})")
+    lines.append("")
+    return lines
 
 
 def generate_report(config: dict[str, Any]) -> Path | None:
@@ -558,20 +700,24 @@ def generate_report(config: dict[str, Any]) -> Path | None:
     report_path = output_dir / f"{report_date.isoformat()}.md"
     news_limit = int(reporting.get("news_limit", 5))
     disclosure_limit = int(reporting.get("disclosure_limit", 5))
+    major_issue_limit = int(reporting.get("major_issue_limit", 10))
     watchlist = normalize_watchlist(config)
+    translation_cache = load_translation_cache()
 
     lines = [
         f"# {report_date.isoformat()} 주식 이벤트 리포트",
         "",
         "이 리포트는 관심 종목의 최근 공시와 뉴스 링크를 자동으로 모은 것입니다.",
+        "영어 뉴스 제목은 가능한 경우 한국어로 번역해 표시합니다.",
         "투자 판단을 대신하지 않으며, 중요한 내용은 원문을 확인하세요.",
         "",
     ]
 
     if not watchlist:
         lines.extend(["관심 종목이 설정되어 있지 않습니다.", ""])
+
+    sections: list[tuple[WatchlistItem, list[ReportEntry], list[ReportEntry], list[str]]] = []
     for item in watchlist:
-        lines.extend([f"## {item.name}({item.symbol})", ""])
 
         if item.market == "KR":
             disclosures = fetch_dart_report_entries(config, item.symbol, disclosure_limit)
@@ -582,8 +728,18 @@ def generate_report(config: dict[str, Any]) -> Path | None:
             if not news:
                 news = fetch_google_news_rss(item.query or f"{item.name} {item.symbol} stock", news_limit)
 
-        lines.append("### 확인 포인트")
+        disclosures = sort_report_entries(disclosures)[:disclosure_limit]
+        news = sort_report_entries(news)[:news_limit]
         notes = infer_report_notes(disclosures + news)
+        sections.append((item, disclosures, news, notes))
+
+    if watchlist:
+        lines.extend(build_major_issue_summary(sections, translation_cache, major_issue_limit))
+
+    for item, disclosures, news, notes in sections:
+        lines.extend([f"## {item.name}({item.symbol})", ""])
+
+        lines.append("### 확인 포인트")
         if notes:
             lines.extend(f"- {note}" for note in notes)
         else:
@@ -594,7 +750,10 @@ def generate_report(config: dict[str, Any]) -> Path | None:
         if disclosures:
             for entry in disclosures:
                 date_text = f" ({entry.published_at})" if entry.published_at else ""
-                lines.append(f"- {markdown_link(entry)}{date_text}")
+                lines.append(f"- {markdown_link_with_translation(entry, translation_cache)}{date_text}")
+                original_note = original_title_note(entry, translation_cache)
+                if original_note:
+                    lines.append(original_note)
                 if entry.summary:
                     lines.append(f"  - {entry.summary}")
         else:
@@ -606,14 +765,21 @@ def generate_report(config: dict[str, Any]) -> Path | None:
             for entry in news:
                 meta = " / ".join(part for part in [entry.source, entry.published_at] if part)
                 meta_text = f" ({meta})" if meta else ""
-                lines.append(f"- {markdown_link(entry)}{meta_text}")
+                lines.append(f"- {markdown_link_with_translation(entry, translation_cache)}{meta_text}")
+                original_note = original_title_note(entry, translation_cache)
+                if original_note:
+                    lines.append(original_note)
                 if entry.summary:
-                    lines.append(f"  - {entry.summary}")
+                    translated_summary = translate_to_korean(entry.summary, translation_cache)
+                    lines.append(f"  - {translated_summary}")
+                    if translated_summary != entry.summary:
+                        lines.append(f"  - 원문 요약: {entry.summary}")
         else:
             lines.append("- 수집된 뉴스가 없습니다.")
         lines.append("")
 
     report_path.write_text("\n".join(lines), encoding="utf-8")
+    save_translation_cache(translation_cache)
     print(f"Report generated: {report_path}")
     return report_path
 

@@ -136,7 +136,8 @@
     "output_dir": "reports",
     "news_limit": 5,
     "disclosure_limit": 5,
-    "dart_recent_days": 14
+    "dart_recent_days": 14,
+    "major_issue_limit": 10
   },
   "korea_dart": {
     "enabled": true,
