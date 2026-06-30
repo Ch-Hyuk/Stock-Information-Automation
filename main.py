@@ -698,14 +698,14 @@ def title_for_report(entry: ReportEntry, translation_cache: dict[str, str]) -> s
 def markdown_link(entry: ReportEntry) -> str:
     title = entry.translated_title or entry.title
     if entry.url:
-        return f"[{title}]({entry.url})"
+        return f"{title} ([링크]({entry.url}))"
     return title
 
 
 def markdown_link_with_translation(entry: ReportEntry, translation_cache: dict[str, str]) -> str:
     title = title_for_report(entry, translation_cache)
     if entry.url:
-        return f"[{title}]({entry.url})"
+        return f"{title} ([링크]({entry.url}))"
     return title
 
 
@@ -910,6 +910,133 @@ def should_send_email() -> bool:
     return all(config.get(key) for key in required)
 
 
+def render_inline_markdown_for_email(text: str) -> str:
+    link_pattern = re.compile(r"\[([^\]]+)\]\((https?://[^)\s]+)\)")
+    parts: list[str] = []
+    position = 0
+
+    def render_text(value: str) -> str:
+        escaped = html.escape(value)
+        return re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", escaped)
+
+    for match in link_pattern.finditer(text):
+        parts.append(render_text(text[position : match.start()]))
+        label = match.group(1).strip()
+        href = html.escape(match.group(2), quote=True)
+        if label == "링크":
+            parts.append(f'<a href="{href}">링크</a>')
+        else:
+            parts.append(f'{render_text(label)} (<a href="{href}">링크</a>)')
+        position = match.end()
+
+    parts.append(render_text(text[position:]))
+    return "".join(parts)
+
+
+def markdown_report_to_email_html(markdown_body: str) -> str:
+    body_parts: list[str] = []
+    open_lists = 0
+
+    def close_lists(target_level: int = 0) -> None:
+        nonlocal open_lists
+        while open_lists > target_level:
+            body_parts.append("</ul>")
+            open_lists -= 1
+
+    for raw_line in markdown_body.splitlines():
+        if not raw_line.strip():
+            close_lists()
+            continue
+
+        heading = re.match(r"^(#{1,3})\s+(.+)$", raw_line)
+        if heading:
+            close_lists()
+            level = len(heading.group(1))
+            body_parts.append(f"<h{level}>{render_inline_markdown_for_email(heading.group(2))}</h{level}>")
+            continue
+
+        bullet = re.match(r"^(\s*)-\s+(.+)$", raw_line)
+        if bullet:
+            indent = len(bullet.group(1).replace("\t", "  "))
+            level = min(indent // 2 + 1, 3)
+            while open_lists < level:
+                body_parts.append("<ul>")
+                open_lists += 1
+            close_lists(level)
+            body_parts.append(f"<li>{render_inline_markdown_for_email(bullet.group(2))}</li>")
+            continue
+
+        close_lists()
+        body_parts.append(f"<p>{render_inline_markdown_for_email(raw_line)}</p>")
+
+    close_lists()
+    content = "\n".join(body_parts)
+    return f"""<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <style>
+    body {{
+      margin: 0;
+      padding: 24px;
+      background: #f6f7f9;
+      color: #1f2933;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif;
+      line-height: 1.58;
+    }}
+    .report {{
+      max-width: 760px;
+      margin: 0 auto;
+      padding: 28px;
+      background: #ffffff;
+      border: 1px solid #e4e7eb;
+      border-radius: 8px;
+    }}
+    h1, h2, h3 {{
+      margin: 24px 0 10px;
+      line-height: 1.25;
+      color: #102a43;
+    }}
+    h1 {{
+      margin-top: 0;
+      font-size: 24px;
+    }}
+    h2 {{
+      padding-top: 14px;
+      border-top: 1px solid #e4e7eb;
+      font-size: 19px;
+    }}
+    h3 {{
+      font-size: 16px;
+    }}
+    p {{
+      margin: 8px 0;
+    }}
+    ul {{
+      margin: 8px 0 12px;
+      padding-left: 22px;
+    }}
+    li {{
+      margin: 6px 0;
+    }}
+    a {{
+      color: #1d4ed8;
+      font-weight: 600;
+      text-decoration: none;
+    }}
+    strong {{
+      color: #111827;
+    }}
+  </style>
+</head>
+<body>
+  <div class="report">
+{content}
+  </div>
+</body>
+</html>"""
+
+
 def send_report_email(report_path: Path | None) -> bool:
     if report_path is None:
         print("No report file was generated; skipping email.")
@@ -929,6 +1056,7 @@ def send_report_email(report_path: Path | None) -> bool:
     message["From"] = config["from"]
     message["To"] = config["to"]
     message.set_content(body)
+    message.add_alternative(markdown_report_to_email_html(body), subtype="html")
     message.add_attachment(
         body.encode("utf-8"),
         maintype="text",
